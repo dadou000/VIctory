@@ -203,15 +203,14 @@ fn spill_loads(
                             _ => 0,
                         },
                         ("s_and_b32", [x, y]) => {
-                            // `s1 & mask` with a small mask, either way round.
-                            let masked = |reg: &Operand, mask: &Operand| match (scalar(reg), mask) {
-                                (Some((c, _)), Operand::Literal(m)) => {
-                                    tag[c as usize] == 2 && *m <= 0xFFFF
-                                }
-                                (Some((c, _)), Operand::Const(k)) => {
-                                    tag[c as usize] == 2 && (129..=192).contains(k)
-                                }
-                                _ => false,
+                            // A 40-bit address uses all eight low bits of the high word.
+                            // Small inline constants (1..=64) always clear at least one.
+                            let masked = |reg: &Operand, mask: &Operand| {
+                                matches!(
+                                    (scalar(reg), mask),
+                                    (Some((c, _)), Operand::Literal(m))
+                                        if tag[c as usize] == 2 && *m <= 0xFFFF && m & 0xFF == 0xFF
+                                )
                             };
                             if masked(x, y) || masked(y, x) { 2 } else { 0 }
                         }
@@ -1219,6 +1218,28 @@ mod tests {
             insts.iter().filter(|i| i.name() == "s_mov_b32").count(),
             1 + 4 + 1
         );
+    }
+
+    #[test]
+    fn spill_pointer_masks_must_keep_the_address_bits() {
+        // These masks both clear bit 7 of the high word of a 40-bit address.
+        for and in [&[0x8703_FF01u32, 0x7f][..], &[0x8703_8101][..]] {
+            let mut words = vec![0xBE82_0300]; // s_mov_b32 s2, s0
+            words.extend_from_slice(and); // s_and_b32 s3, s1, 0x7f or 1
+            words.extend([0xF408_0201, 0xFA00_0010, S_ENDPGM]); // load through s[2:3]
+            let code = words
+                .iter()
+                .flat_map(|w| w.to_le_bytes())
+                .collect::<Vec<_>>();
+            let p = build_with(&code, false, 256, true).unwrap();
+            assert!(
+                p.blocks
+                    .iter()
+                    .flat_map(|b| &b.insts)
+                    .any(|i| i.name() == "s_load_dwordx4"),
+                "narrowed pointer was treated as the spill table: {and:x?}"
+            );
+        }
     }
 
     /// Loads from a pointer that is not the spill table stay loads.
