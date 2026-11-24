@@ -118,6 +118,8 @@ cargo build --profile diag -p victory --features diagnostics   # target\diag\vic
 | `VICTORY_CRASH_SAVE=<rva>:<len>,...` | saves title memory to the cache folder on a crash |
 | `VICTORY_CAPTURE=<dir>` | saves presented frames (powers of two, or `VICTORY_CAPTURE_FRAMES=<list>`) |
 | `VICTORY_DUMP_TARGETS=1` | with the two above, saves every render target of those frames |
+| F9 | with `VICTORY_CAPTURE` set, F9 (pressed anywhere) saves the frame three presents later, and with `VICTORY_DUMP_TARGETS` its render targets; the log line `TARGETWRITE index=<n> resource=<..> pipeline=<..>` says which pipeline writes the target with that index in the file names |
+| `VICTORY_DISASM=<hash>,...` and `VICTORY_DISASM_DIR=<dir>` | writes the GFX10 text of those shaders to `<dir>/<hash>.<stage>.txt` when they are first translated |
 | `VICTORY_D3D12_DEBUG=1` | host debug layer |
 | `VICTORY_D3D12_GBV=1` | with the above, GPU-based validation (bad descriptor use reported, not faulted; slow) |
 | `VICTORY_D3D12_DRED=1` | on a GPU failure, the allocation hit and the commands in flight |

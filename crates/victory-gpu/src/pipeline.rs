@@ -108,6 +108,8 @@ impl Shader {
         self.translated
             .get_or_init(|| {
                 let done = translate(&self.container);
+                #[cfg(feature = "diagnostics")]
+                dump_disasm(&self.hash, &self.container);
                 match &done {
                     Ok(t) => tracing::info!(
                         stage = self.stage,
@@ -126,6 +128,38 @@ impl Shader {
                 done.ok()
             })
             .as_ref()
+    }
+}
+
+/// `VICTORY_DISASM=<hash,hash>` and `VICTORY_DISASM_DIR=<folder>`: the GFX10 text of
+/// those shaders, written as `<hash>.txt`.
+#[cfg(all(windows, feature = "diagnostics"))]
+fn dump_disasm(hash: &str, container: &[u8]) {
+    use victory_shader::{Container, FourCC};
+    let (Some(list), Some(dir)) = (
+        std::env::var_os("VICTORY_DISASM"),
+        std::env::var_os("VICTORY_DISASM_DIR"),
+    ) else {
+        return;
+    };
+    if !list.to_string_lossy().split(',').any(|h| h.trim() == hash) {
+        return;
+    }
+    let Ok(c) = Container::parse(container) else { return };
+    let Some(part) = c.part(FourCC::DXIL) else { return };
+    let Ok(programs) = victory_shader::native_programs(part.data) else { return };
+    for p in programs {
+        let Ok(insts) = victory_shader::gfx10::decode(&p.patched_code()) else { continue };
+        let mut text = format!(
+            "stage {:?} wave64 {} vgprs {} layout {:?} io {:?}
+",
+            p.stage, p.wave64, p.vgprs, p.layout, p.io
+        );
+        for i in &insts {
+            text.push_str(&format!("{:05x}: {}
+", i.offset, i.text(p.wave64)));
+        }
+        let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{hash}.{:?}.txt", p.stage)), text);
     }
 }
 

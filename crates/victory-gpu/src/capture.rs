@@ -19,6 +19,10 @@ pub(crate) fn folder() -> Option<&'static PathBuf> {
 /// Frames listed in `VICTORY_CAPTURE_FRAMES` (comma-separated): saved
 /// too, and their draws traced at debug level.
 pub(crate) fn listed(n: u64) -> bool {
+    start_hotkey();
+    if n != 0 && n == ARMED.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
     static LIST: std::sync::OnceLock<Vec<u64>> = std::sync::OnceLock::new();
     LIST.get_or_init(|| {
         let list = std::env::var("VICTORY_CAPTURE_FRAMES").unwrap_or_default();
@@ -27,6 +31,38 @@ pub(crate) fn listed(n: u64) -> bool {
             .collect()
     })
     .contains(&n)
+}
+
+/// The frame the F9 key armed for a capture (0: none). F9 pressed anywhere
+/// (with `VICTORY_CAPTURE` set) saves the frame three presents later, with its
+/// render targets when `VICTORY_DUMP_TARGETS` is set.
+static ARMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn start_hotkey() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if folder().is_none() {
+            return;
+        }
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn GetAsyncKeyState(vk: i32) -> i16;
+        }
+        std::thread::spawn(|| {
+            let mut was_down = false;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                // SAFETY: a plain query of the keyboard state.
+                let down = unsafe { GetAsyncKeyState(0x78) } < 0; // VK_F9
+                if down && !was_down {
+                    let frame = crate::queue::presented() + 3;
+                    ARMED.store(frame, std::sync::atomic::Ordering::Relaxed);
+                    tracing::info!(frame, "F9: capturing that frame");
+                }
+                was_down = down;
+            }
+        });
+    });
 }
 
 /// Whether frame `n` is saved.
@@ -224,7 +260,36 @@ pub(crate) fn note_target(resource: crate::object::This) {
     {
         targets.push((resource as usize, copy));
     }
+    // Which pipeline writes which target (the dump's index is its position).
+    if let Some(index) = targets.iter().position(|&(r, _)| r == resource as usize) {
+        let pipeline = CURRENT.with(|c| c.borrow().clone());
+        static SEEN: std::sync::Mutex<Vec<(usize, String)>> = std::sync::Mutex::new(Vec::new());
+        let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        if !seen.iter().any(|(i, p)| *i == index && *p == pipeline) {
+            if seen.len() > 4000 {
+                seen.clear();
+            }
+            tracing::info!(index, resource = format_args!("{:#x}", resource as usize), %pipeline, "TARGETWRITE");
+            seen.push((index, pipeline));
+        }
+    }
 }
+
+thread_local! {
+    static CURRENT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The pipeline the next noted targets are written by.
+pub(crate) fn set_current(name: &str) {
+    if dump_on() {
+        CURRENT.with(|c| {
+            let mut c = c.borrow_mut();
+            c.clear();
+            c.push_str(name);
+        });
+    }
+}
+
 
 /// At the present of frame `frame`: saves the noted targets.
 pub(crate) fn dump_targets(frame: u64) {
